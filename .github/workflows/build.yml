@@ -1,0 +1,49 @@
+name: Build OpenHarmony ARM64 library
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Bootstrap Go and prepare the native SDK
+        run: |
+          python3 scripts/prepare-toolchain.py "$RUNNER_TEMP/go-ohos" &
+          go_pid=$!
+          bash scripts/fetch-native-sdk.sh "$RUNNER_TEMP/ohos-sdk" &
+          sdk_pid=$!
+          status=0
+          wait "$go_pid" || status=1
+          wait "$sdk_pid" || status=1
+          exit "$status"
+      - name: Build and link the C ABI example
+        env:
+          OHOS_GO_ROOT: ${{ runner.temp }}/go-ohos/go
+          OHOS_SDK_NATIVE: ${{ runner.temp }}/ohos-sdk/native
+          GOCACHE: ${{ runner.temp }}/go-ohos/cache
+        run: bash scripts/package-example.sh
+      - name: Upload library and header
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: go1.27.3-openharmony-arm64-api26-c-shared
+          path: dist/c-shared/
+          if-no-files-found: error
+      - name: Archive Linux x64 Go toolchain
+        run: tar -czf dist/go1.27.3-ohos-linux-amd64.tar.gz -C "$RUNNER_TEMP/go-ohos" go
+      - name: Upload Go toolchain
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: go1.27.3-ohos-linux-amd64-toolchain
+          path: dist/go1.27.3-ohos-linux-amd64.tar.gz
+          if-no-files-found: error
