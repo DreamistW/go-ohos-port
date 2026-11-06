@@ -2,6 +2,7 @@ name: Build OpenHarmony ARM64 library
 on:
   push:
     branches: [main]
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
   workflow_dispatch:
 
@@ -33,17 +34,55 @@ jobs:
           OHOS_SDK_NATIVE: ${{ runner.temp }}/ohos-sdk/native
           GOCACHE: ${{ runner.temp }}/go-ohos/cache
         run: bash scripts/package-example.sh
-      - name: Upload library and header
+      - name: Package validated library and toolchain
+        run: |
+          tar -czf dist/openharmony-arm64-c-shared.tar.gz -C dist/c-shared .
+          tar -czf dist/go-ohos-linux-amd64.tar.gz -C "$RUNNER_TEMP/go-ohos" go
+          cd dist
+          sha256sum openharmony-arm64-c-shared.tar.gz go-ohos-linux-amd64.tar.gz > SHA256SUMS.txt
+      - name: Upload packages
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: go1.27.3-openharmony-arm64-api26-c-shared
-          path: dist/c-shared/
+          name: openharmony-packages
+          path: |
+            dist/openharmony-arm64-c-shared.tar.gz
+            dist/go-ohos-linux-amd64.tar.gz
+            dist/SHA256SUMS.txt
           if-no-files-found: error
-      - name: Archive Linux x64 Go toolchain
-        run: tar -czf dist/go1.27.3-ohos-linux-amd64.tar.gz -C "$RUNNER_TEMP/go-ohos" go
-      - name: Upload Go toolchain
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+          compression-level: 0
+
+  release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.ref }}
+    steps:
+      - name: Download validated packages
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: go1.27.3-ohos-linux-amd64-toolchain
-          path: dist/go1.27.3-ohos-linux-amd64.tar.gz
-          if-no-files-found: error
+          name: openharmony-packages
+          path: release-assets
+      - name: Publish latest release
+        working-directory: release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          sha256sum -c SHA256SUMS.txt
+          assets=(openharmony-arm64-c-shared.tar.gz go-ohos-linux-amd64.tar.gz SHA256SUMS.txt)
+          if is_draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft); then
+            if [[ "$is_draft" == false ]]; then
+              echo "Release $GITHUB_REF_NAME is already published."
+              exit 0
+            fi
+            gh release upload "$GITHUB_REF_NAME" --clobber "${assets[@]}"
+            gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --verify-tag --latest \
+              --title "Go for OpenHarmony $GITHUB_REF_NAME" \
+              --notes "包含已通过 API 26 C 链接验收的 ARM64 共享库和头文件、Linux x86-64 Go 工具链及 SHA-256 校验清单。Go 基线见此标签下的 toolchain.lock.json。"
+          fi
